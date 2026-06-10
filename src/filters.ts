@@ -139,14 +139,13 @@ export function buildAccountFilter(
   const acct: AccountFilter = {};
   let hasFilter = false;
 
-  // Domain (AllAny, use 'all' for domain)
+  // Domain (AllAny) — 'any' so multi-domain means "at ANY of these companies"
   const domains = opts.domain || [];
   const excludeDomains = loadExcludeDomains(opts);
   if (domains.length > 0 || excludeDomains.length > 0) {
     acct.domain = allAnyFilter(
       domains.length > 0 ? domains : undefined,
       excludeDomains.length > 0 ? excludeDomains : undefined,
-      true, // domain uses 'all'
     ) as AccountFilter["domain"];
     hasFilter = true;
   }
