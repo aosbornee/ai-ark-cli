@@ -323,6 +323,23 @@ export interface ExportJobResponse {
 }
 
 // ---------------------------------------------------------------------------
+// Export submissions list (GET /people/export/submissions)
+// ---------------------------------------------------------------------------
+
+export interface ExportSubmission {
+  trackId: string;
+  state: string;
+  requestSize: number;
+  submittedDate: string;
+  doneDate: string | null;
+  fullyRefunded: boolean;
+}
+
+export interface ExportSubmissionsResponse {
+  content: ExportSubmission[];
+}
+
+// ---------------------------------------------------------------------------
 // Export results (people with emails)
 // ---------------------------------------------------------------------------
 

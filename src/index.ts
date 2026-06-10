@@ -1,4 +1,3 @@
-#!/usr/bin/env bun
 import { readFileSync } from "fs";
 import { resolve, dirname } from "path";
 import { fileURLToPath } from "url";
@@ -31,11 +30,7 @@ function loadEnvFile(dir: string): boolean {
 
 const cliDir = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 if (!loadEnvFile(cliDir)) {
-  // Hardcoded fallback for known install location
-  const knownInstall = resolve("C:/Users/mitch/Everything_CC/ai-ark-cli");
-  if (cliDir !== knownInstall && !loadEnvFile(knownInstall)) {
-    loadEnvFile(process.cwd());
-  }
+  loadEnvFile(process.cwd());
 }
 
 // Expose searched dirs so createClient() can report them in errors

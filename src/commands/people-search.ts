@@ -15,6 +15,87 @@ import type {
   PeopleSearchResponse,
 } from "../types/api.js";
 
+/**
+ * Split an array into chunks of the given size.
+ */
+function chunkArray<T>(arr: T[], size: number): T[][] {
+  const chunks: T[][] = [];
+  for (let i = 0; i < arr.length; i += size) {
+    chunks.push(arr.slice(i, i + size));
+  }
+  return chunks;
+}
+
+/**
+ * Post-filter: verify that the title keywords from --title appear in the
+ * position_groups entry whose company domain matches one of the searched domains.
+ * Catches the "side-gig" bug where a VP title is at a different company.
+ */
+function verifyTitleCompanyMatch(
+  results: unknown[],
+  titleKeywords: string[],
+  searchedDomains: string[],
+): unknown[] {
+  if (titleKeywords.length === 0 || searchedDomains.length === 0) return results;
+
+  const domainSet = new Set(searchedDomains.map((d) => d.toLowerCase().replace(/^www\./, "")));
+  const titleLower = titleKeywords.map((t) => t.toLowerCase());
+
+  const filtered: unknown[] = [];
+  let dropped = 0;
+
+  for (const result of results) {
+    const person = result as any;
+    const posGroups: any[] = person.position_groups || [];
+
+    // Find the position group whose company domain matches one of the searched domains
+    const matchingGroup = posGroups.find((pg: any) => {
+      const companyUrl = pg.company?.url || "";
+      // Extract domain from LinkedIn URL or direct domain field
+      const companyDomain = (pg.company?.domain || extractDomain(companyUrl) || "").toLowerCase().replace(/^www\./, "");
+      return companyDomain && domainSet.has(companyDomain);
+    });
+
+    if (!matchingGroup) {
+      // No matching company found in position_groups -- keep the result
+      // (could be a name-based search with no domain filter)
+      filtered.push(result);
+      continue;
+    }
+
+    // Check if any title keyword appears in the matching group's positions
+    const positions: any[] = matchingGroup.profile_positions || [];
+    const hasMatch = positions.some((pos: any) => {
+      const posTitle = (pos.title || "").toLowerCase();
+      return titleLower.some((kw) => posTitle.includes(kw));
+    });
+
+    if (hasMatch) {
+      filtered.push(result);
+    } else {
+      dropped++;
+    }
+  }
+
+  if (dropped > 0) {
+    process.stderr.write(`Title-company verification: filtered out ${dropped} contact(s) with mismatched titles\n`);
+  }
+
+  return filtered;
+}
+
+/**
+ * Extract a domain from a URL string.
+ */
+function extractDomain(url: string): string {
+  try {
+    const u = new URL(url.startsWith("http") ? url : `https://${url}`);
+    return u.hostname;
+  } catch {
+    return "";
+  }
+}
+
 export function peopleSearchCommand(): Command {
   return new Command("search")
     .description("Search 400M+ people profiles")
@@ -71,7 +152,9 @@ export function peopleSearchCommand(): Command {
     .option("--output <file>", "Write results to this exact path instead of ~/.ai-ark/results/")
     .option("--no-save", "Skip auto-save to ~/.ai-ark/results/")
     .option("--dry-run", "Print review URL + filter payload without calling the API")
-    .option("--no-review-url", "Suppress the 🔗 Review URL printed to stderr")
+    .option("--no-review-url", "Suppress the review URL printed to stderr")
+    .option("--chunk-size <number>", "Domains per API call when batching (default: 300)", "300")
+    .option("--verify-title-match", "Post-filter: drop contacts whose title doesn't match at the searched company")
     .action(async (opts) => {
       try {
         const client = createClient();
@@ -137,11 +220,20 @@ export function peopleSearchCommand(): Command {
           process.exit(1);
         }
 
-        // If we have batch domains, search each one
+        const chunkSize = parseInt(opts.chunkSize, 10) || 300;
+
+        // If we have batch domains, chunk them and search
         if (domains.length > 1) {
+          const chunks = chunkArray(domains, chunkSize);
           const allResults: unknown[] = [];
-          for (const domain of domains) {
-            const batchOpts = { ...filterOpts, domain: [domain] };
+
+          process.stderr.write(`Searching ${domains.length} domains in ${chunks.length} chunk(s) of up to ${chunkSize}...\n`);
+
+          for (let i = 0; i < chunks.length; i++) {
+            const chunk = chunks[i];
+            process.stderr.write(`  Chunk ${i + 1}/${chunks.length}: ${chunk.length} domains\n`);
+
+            const batchOpts = { ...filterOpts, domain: chunk };
             const body: PeopleSearchRequest = {
               page: parseInt(opts.page, 10),
               size: parseInt(opts.size, 10),
@@ -153,7 +245,13 @@ export function peopleSearchCommand(): Command {
             const result = await client.post<PeopleSearchResponse>("/people", body);
             allResults.push(...result.content);
           }
-          const filtered = filterByProfile(allResults, "person", profile);
+
+          // Apply title-company verification post-filter if requested
+          const verified = opts.verifyTitleMatch
+            ? verifyTitleCompanyMatch(allResults, opts.title || [], domains)
+            : allResults;
+
+          const filtered = filterByProfile(verified, "person", profile);
           persistResults({
             data: filtered,
             command: "people-search",
@@ -184,7 +282,14 @@ export function peopleSearchCommand(): Command {
         const result = await client.post<PeopleSearchResponse>("/people", body);
 
         const rawData = format === "json" ? result : result.content;
-        const filtered = filterByProfile(rawData, "person", profile);
+        const rawArray = Array.isArray(rawData) ? rawData : ((rawData as any).content ?? [rawData]);
+
+        // Apply title-company verification post-filter if requested
+        const verified = opts.verifyTitleMatch
+          ? verifyTitleCompanyMatch(rawArray, opts.title || [], domains)
+          : rawData;
+
+        const filtered = filterByProfile(verified, "person", profile);
         persistResults({
           data: filtered,
           command: "people-search",
